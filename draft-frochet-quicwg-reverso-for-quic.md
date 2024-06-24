@@ -43,10 +43,152 @@ v1 described in {{RFC9000}} is untouched.
 # Streams
 
 Stream ID values start at 1. The value 0 is reserved to indicate within
-the new short header (see Section {{<Header-Protection>}}) that no
-stream frame is packed within the payload.
+the new short header (see {{Header-Protection}}) that no stream frame is
+packed within the payload.
 
 # Frame Formats
+
+Frames' structure written on the wire are altered in this QUIC version
+to support backward processing of QUIC packets. With the exception of
+the ACK frame, all the other frames are straightforward to adapt from
+{{RFC9000}}. Essentially, on {{RFC9000}}, each frame begins with a Frame
+Type followed by additional type-dependent fields, and are represented
+as this:
+
+~~~
+Frame {
+  Frame Type (i),
+  Type-Dependent Fields (..),
+}
+~~~
+
+This representation follows the implicit rule that what we specify from
+top to bottom is written and read from left to right on the wire.
+
+If QUIC VReverso is used, frames are reversed. Type-dependent fields
+appear first (from left to right on the wire), and the frame terminates
+with the Frame Type. We represent those frames by reversing as well
+their representation in specifications:
+
+~~~
+Frame {
+  Type-Dependent Fields (..),
+  Frame Type (i),
+}
+~~~
+
+Of course, within an implementation, the relative order of elements
+within Structs or Objects does not matter, and can stay untouched. Only
+writting on wire and reading from the wire would be altered.
+
+The choice of order of Type-Dependent Fields only matter to smooth
+transition and adaptation of existing code handling {{RFC9000}}'s frame
+format. Reversing the existing ordering, and not making other changes
+within the relative order of elements supports straightforward
+adaptation of existing code. For example, in {{RFC9000}}, the
+MAX_STREAM_DATA Frame is defined as:
+
+~~~
+MAX_STREAM_DATA Frame {
+  Type (i) = 0x11,
+  Stream ID (i),
+  Maximum Stream Data (i),
+}
+~~~
+
+Which would translate to:
+
+~~~
+MAX_STREAM_DATA Frame {
+  Maximum Stream Data (i),
+  Stream ID (i),
+  Type (i) = 0x11,
+}
+~~~
+
+Other frames are altered with the same reversing logic. There is one
+more step regarding the Ack Frame.
+
+## Ack Frame's exception
+
+The Ack Frame is reversed as well, but requires further changes on the
+ACK Range's specification. The goal is to guarantee no change in
+processing logic of a ACK Frame, and minimal change to existing code. We
+have for this proposal the ACK Frame reversed:
+
+~~~
+ACK Frame {
+  [ECN Counts (..)],
+  ACK Range (..) ...,
+  First ACK Range (i),
+  ACK Range Count (i),
+  ACK Dealy (i),
+  Largest Acknowledged (i),
+  Type (i)  = 0x02..0x03,
+}
+~~~
+
+Where the ACK Range contains ranges of packets that are alternately not
+acknowledged (Gap) and acknowledged (ACK Range). All other fields are
+untouched, only their order on the wire is modifierd.
+
+### Reversed ACK Ranges
+
+In {{RFC9000}}, each ACK Range consists of alternating Gap and ACK Range
+Length values *in descending packet number order* as appearing on the
+wire. The ranges in {{RFC9000}} contain the information in reversed
+ordering, starting from the largest acknowledged packets. In this
+proposal, to accommodate backward processing of the frame and minimal
+algorithmic changes, the ACK Range consists of alternating ACK Range
+Length and Gap in *ascending packet number order*.
+
+~~~
+ACK Range {
+  ACK Range Length (i),
+  Gap (i),
+}
+~~~
+{: #ack-range-format title="ACK Ranges"}
+
+As explained in {{RFC9000}}, the fields that form each ACK Range are:
+
+ACK Range Length:
+
+: A variable-length integer indicating the number of contiguous acknowledged
+  packets preceding the largest packet number, as determined by the
+  preceding Gap.
+
+Gap:
+
+: A variable-length integer indicating the number of contiguous unacknowledged
+  packets preceding the packet number one lower than the smallest in the
+  preceding ACK Range.
+
+Since ACK Range Length and Gap are defined as relative integer; to keep
+efficient processing, and unchanged algorithmic compared to {{RFC9000}},
+each ACK Range describes progressively lower-numbered packets while
+being processed backwards. However, on the wire, from left to right,
+each ACK Range describes progressively higher-numbered packets.
+
+Therefore, while processing this information backwards, and given the
+largest packet number for the current range, the smallest value is
+determined by the following formula (like {{RFC9000}}):
+
+~~~
+   smallest = largest - ack_range
+~~~
+
+Where the largest value for an ACK Range is determined by cumulatively
+subtracting the size of all preceding ACK Range Lengths and Gaps. The
+first largest value is obtained with the ACK Frame's Largest
+Acknowledged field. Subsequent largest for each Ack Range is then
+computed similarly to {{RFC9000}}:
+
+~~~
+   largest = previous_smallest - gap - 2
+~~~
+
+
 
 # Packet Formats
 
@@ -55,7 +197,7 @@ Stream ID of any stream frame within the payload, and the data offset.
 These two integers are added in the QUIC short header and protected with
 the mask.
 
-## Header Protection
+## Header Protection {#Header-Protection}
 
 Header of 1-RTT short header packets is extended to add at most 8 bytes
 of information, requiring a 13-bytes mask. Application of the mask
@@ -87,8 +229,8 @@ The 1-RTT packets has the following modifications from QUIC v1:
 least significant two bits of the last byte containing the length of the
 Stream ID. This length is encoded as an unsigned two-bit integer that is
 one less than the length of the Stream ID field in bytes. This is field
-is protected using {{RFC9001}}'s mask up to consume 5 from the minimum
-guaranteed 16 bytes in total.
+is protected using {{RFC9001}}'s mask up to consume 5 bytes (including
+the header's first byte) from the minimum guaranteed 16 bytes in total.
 
 - Stream ID: The Stream ID field is 1 to 4 bytes long with the least
 significant two bits of the last byte containing the length of the
@@ -172,6 +314,9 @@ struct {
 matters. The data chunk MUST be the first element within the encryption,
 followed by any number of control chunks, up to the packet boundary. We
 SHOULD pack a single data chunk per encryption. More than one would
+create fragments on the receiver, and increase the cost of message
+reassembly by forcing an unavoidable memory copy to deliver a contiguous
+stream of bytes.
 
 --- back
 

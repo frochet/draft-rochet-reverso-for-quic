@@ -34,13 +34,47 @@ v1 described in {{RFC9000}} is untouched.
 
 # Introduction
 
+QUIC is a general-purpose transport protocol with mandatory encryption
+leveraged from a TLS 1.3 key exchange. QUIC is specified in {{RFC9000}},
+and is the result of several years of efforts from several major
+companies, independent individuals and academics. One of the main
+benefits of QUIC is to resist ossification thanks to a two-levels
+encryption design (header and payload), supporting extensions and
+modifications of internal QUIC information to resist friction
+from independent lower layers at deployment time.
+
+However, it is of notoriety that the QUIC design is CPU costly. The root
+cause of QUIC's high CPU cost isn't unique, and this document addresses
+one of them: a misalignment between QUIC's protocol specification and
+encryption usage. Indeed, the QUIC design in {{RFC9000}} unavoidably
+fragments Application Data and forces any implementation to perform at
+least a memory copy to provide a contiguous bytestream abstraction to
+the upper layer, at the receiver.
+
+This documents suggests slight changes to the QUIC protocol to offer the
+opportunity for implementers to provide a contiguous zero-copy
+abstraction at the receiver side, which is otherwise impossible to do
+from {{RFC9000}}'s specifications. We temporally call this extensions
+QUIC VReverso
+
 # Goals
+
+We aim to change how the QUIC protocol specifies its frames to support
+contiguous zero-copy. A few more bytes have also to be added within the
+protected short header. Those changes are however engineered with goals
+to:
+
+- Create minimal work for existing implementation to migrate to this
+extension.
+- Does not modify any of the QUIC's transport properties and does not
+conflict with the goals of any ongoing work on QUIC extensions (e.g., MPQUIC).
+- Does not impact QUIC's security.
 
 # Conventions and Definitions
 
 {::boilerplate bcp14-tagged}
 
-# Streams
+# Streams {#Streams}
 
 Stream ID values start at 1. The value 0 is reserved to indicate within
 the new short header (see {{Header-Protection}}) that no stream frame is
@@ -106,13 +140,13 @@ MAX_STREAM_DATA Frame {
 }
 ~~~
 
-Other frames are altered with the same reversing logic. There is one
-more step regarding the Ack Frame.
+Other frames are altered with the same reversing logic. It includes
+reversing internal structures in a given Frame if any, such as the ACK Frame.
 
-## Ack Frame's exception
+## Ack Frame's details
 
 The Ack Frame is reversed as well, but requires further changes on the
-ACK Range's specification. The goal is to guarantee no change in
+ACK Range's specification and ECN Counts. The goal is to guarantee no change in
 processing logic of a ACK Frame, and minimal change to existing code. We
 have for this proposal the ACK Frame reversed:
 
@@ -156,13 +190,13 @@ ACK Range Length:
 
 : A variable-length integer indicating the number of contiguous acknowledged
   packets preceding the largest packet number, as determined by the
-  preceding Gap.
+  last processed Gap.
 
 Gap:
 
 : A variable-length integer indicating the number of contiguous unacknowledged
   packets preceding the packet number one lower than the smallest in the
-  preceding ACK Range.
+  last processed ACK Range.
 
 Since ACK Range Length and Gap are defined as relative integer; to keep
 efficient processing, and unchanged algorithmic compared to {{RFC9000}},
@@ -188,9 +222,24 @@ computed similarly to {{RFC9000}}:
    largest = previous_smallest - gap - 2
 ~~~
 
+### Reversed ECN Counts
 
+The ACK frame uses the least significant bit of the type value to
+indicate ECN feedback. The ECN Counts order is reversed compared to
+{{RFC9000}} to support minimal change to processing logic in existing
+implementations while being processed backwards (i.e., the order of
+processed elements stays the same).
 
-# Packet Formats
+~~~
+ECN Counts {
+  ECN-CE Count (i),
+  ECT1 Count (i),
+  ECT0 Count (i),
+}
+~~~
+{: #ecn-count-format title="ECN Count Format"}
+
+# Packet Formats {#Packet-Format}
 
 For implementers to take advantage of Reverso, we require to know the
 Stream ID of any stream frame within the payload, and the data offset.
@@ -275,48 +324,25 @@ integer value in network byte order.
 | 11   | 8      | 62          | 0-4611686018427387903 |
 {: #integer-summary title="Summary of Integer Encodings with Reverso"}
 
-# Reversing to enable contiguous zero-copy
+# Packing frames
 
-There is a straightforward protocol design adaptation that could be
-applied to any encrypted protocol to enable transport implementers to go
-for a contiguous zero-copy interface if wished. This proposal does not
-relax any security guarantee of the protocol, nor obliges a transport
-implementer to change its interface to application while supporting the
-new version.
+To take advantage of backward processing of QUIC VReverso packets, some
+constraints SHOULD be respected. The order and number of data chunks
+within a single encryption matters. The Stream frame if any MUST be the first
+element within the encrypted payload, followed by any number of control frames,
+up to the packet boundary. We SHOULD pack a single data frame per
+encryption. More than one would create fragments on the receiver, and
+increase the cost of message reassembly by forcing an unavoidable memory
+copy to deliver a contiguous stream of bytes.
 
-- First, we require to reverse the order of the fields within all
-encrypted control chunks. That is, if a chunk is defined by:
-
-
-
-~~~
-struct {
-  type (8),
-  foo (16),
-  bar (8..16),
-}
-~~~
-
-and is written on the wire from left to right starting at `type`, then
-chunk MUST be written starting from `bar` up to `type`. For clarity, we
-suggest that any protocol design applying Reverso reverses as well
-their field presentation. Such struct would become:
-
-~~~
-struct {
-  bar (8..16),
-  foo (16),
-  type (8),
-}
-~~~
-
-- Second, the order and number of data chunks within a single encryption
-matters. The data chunk MUST be the first element within the encryption,
-followed by any number of control chunks, up to the packet boundary. We
-SHOULD pack a single data chunk per encryption. More than one would
-create fragments on the receiver, and increase the cost of message
-reassembly by forcing an unavoidable memory copy to deliver a contiguous
-stream of bytes.
+Lost frames being resubmitted SHOULD be packed within their own packet,
+and other control frames SHOULD not be multiplexed with retransmissions.
+This allows for spurious retransmissions that have been already
+processed but not acknowledged fast enough to not require the two-levels
+decryption. Only header decryption and information contained within the
+QUIC VReverso short header would be enough to decide whether the packet
+should be decrypted, or could be dropped before payload decryption is
+attempted.
 
 --- back
 

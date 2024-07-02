@@ -55,7 +55,9 @@ This documents suggests slight changes to the QUIC protocol to offer the
 opportunity for implementers to provide a contiguous zero-copy
 abstraction at the receiver side, which is otherwise impossible to do
 from {{RFC9000}}'s specifications. We temporally call this extensions
-QUIC VReverso
+QUIC VReverso. With this extension, frames' content are encoded in
+reverse ordering and would be processed from right to left at the
+receiver, instead of the usual left to right as in any protocol.
 
 # Goals
 
@@ -69,6 +71,8 @@ extension.
 - Does not modify any of the QUIC's transport properties and does not
 conflict with the goals of any ongoing work on QUIC extensions (e.g., MPQUIC).
 - Does not impact QUIC's security.
+- Does not modify encryption/decryption implementations such that compatibility
+with existing crypto backends are preserved.
 
 # Conventions and Definitions
 
@@ -330,10 +334,9 @@ To take advantage of backward processing of QUIC VReverso packets, some
 constraints SHOULD be respected. The order and number of data chunks
 within a single encryption matters. The Stream frame if any MUST be the first
 element within the encrypted payload, followed by any number of control frames,
-up to the packet boundary. We SHOULD pack a single data frame per
-encryption. More than one would create fragments on the receiver, and
-increase the cost of message reassembly by forcing an unavoidable memory
-copy to deliver a contiguous stream of bytes.
+up to the packet boundary. We SHOULD pack a single Stream frame per
+encryption. More than one would force an unavoidable memory copy of all
+but the first Stream frame within a packet.
 
 Lost frames being resubmitted SHOULD be packed within their own packet,
 and other control frames SHOULD not be multiplexed with retransmissions.
@@ -341,8 +344,8 @@ This allows for spurious retransmissions that have been already
 processed but not acknowledged fast enough to not require the two-levels
 decryption. Only header decryption and information contained within the
 QUIC VReverso short header would be enough to decide whether the packet
-should be decrypted, or could be dropped before payload decryption is
-attempted.
+payload should be decrypted, or could be dropped before payload
+decryption is attempted.
 
 --- back
 

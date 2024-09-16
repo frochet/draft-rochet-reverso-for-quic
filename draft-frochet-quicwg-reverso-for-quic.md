@@ -54,10 +54,11 @@ the upper layer, at the receiver.
 This documents suggests slight changes to the QUIC protocol to offer the
 opportunity for implementers to provide a contiguous zero-copy
 abstraction at the receiver side, which is otherwise impossible to do
-from {{RFC9000}}'s specifications. We temporally call this extensions
-QUIC VReverso. With this extension, frames' content are encoded in
-reverse ordering and would be processed from right to left at the
-receiver, instead of the usual left to right as in any protocol.
+from {{RFC9000}}'s specifications using atomic interfaces from
+crypgraphy backends. We temporally call this extensions QUIC VReverso.
+With this extension, frames' content are encoded in reverse ordering and
+would be processed from right to left at the receiver, instead of the
+usual left to right as in any protocol.
 
 # Goals
 

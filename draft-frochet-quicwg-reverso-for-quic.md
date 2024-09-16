@@ -8,7 +8,7 @@ workgroup: QUICWG
 venue:
   group: QUICWG
   type: Working Group
-  github: https://github.com/frochet/draft-rochet-reverso-generic
+  github: https://github.com/frochet/draft-rochet-reverso-for-quic
 
 author:
  -

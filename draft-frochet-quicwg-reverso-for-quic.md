@@ -118,7 +118,7 @@ Frame {
 
 Of course, within an implementation, the relative order of elements
 within Structs or Objects does not matter, and can stay untouched. Only
-writting on wire and reading from the wire would be altered.
+writing on wire and reading from the wire would be altered.
 
 The choice of order of Type-Dependent Fields only matter to smooth
 transition and adaptation of existing code handling {{RFC9000}}'s frame

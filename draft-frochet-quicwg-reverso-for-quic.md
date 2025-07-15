@@ -22,7 +22,7 @@ informative:
 
 --- abstract
 
-This document describes a QUIC extension re-designing the layout of the
+This document describes a QUIC version re-designing the layout of the
 QUIC protocol to avoid memory fragmentation at the receiver and allows
 implementers seeking a more efficient implementation to have the option
 to implement contiguous zero-copy at the receiver. This document
@@ -51,29 +51,54 @@ fragments Application Data and forces any implementation to perform at
 least a memory copy to provide a contiguous bytestream abstraction to
 the upper layer, at the receiver.
 
-This documents suggests slight changes to the QUIC protocol to offer the
+This documents suggests another QUIC Version demanding the Stream frame
+to always be the first frame if any, and reversing the wire
+representation of the QUIC protocol. These two changes offer the
 opportunity for implementers to provide a contiguous zero-copy
-abstraction at the receiver side, which is otherwise impossible to do
-from {{RFC9000}}'s specifications using atomic interfaces from
-crypgraphy backends. We temporally call this extensions QUIC VReverso.
-With this extension, frames' content are encoded in reverse ordering and
-would be processed from right to left at the receiver, instead of the
-usual left to right as in any protocol.
+abstraction at the receiver side for each stream using the decryption
+internal copy for data reassembly. With this version, QUIC frames are
+encoded in reverse ordering and would be processed from right to left at
+the receiver, instead of the usual left to right as in any protocol. The
+stream frame may be followed by any number of control frame up to packet
+boundary. Other stream frames may be packed within the same packet,
+although receiver implementations would not be able to process them in
+contiguous zero-copy.
 
 # Goals
 
-We aim to change how the QUIC protocol specifies its frames to support
-contiguous zero-copy. A few more bytes have also to be added within the
-protected short header. Those changes are however engineered with goals
-to:
+We aim to change how the QUIC protocol specifies its frames to support a
+stream abstraction with the option to offer a contiguous zero-copy
+interface to the upper layer. A few more bytes have also to be added
+within the protected short header. Those changes are however engineered
+with goals to:
 
-- Create minimal work for existing implementation to migrate to this
-extension.
-- Does not modify any of the QUIC's transport properties and does not
-conflict with the goals of any ongoing work on QUIC extensions (e.g., MPQUIC).
-- Does not impact QUIC's security.
-- Does not modify encryption/decryption implementations such that compatibility
-with existing crypto backends are preserved.
+- Minimize added control overheads.
+- Incremental support is possible: minimal work for existing
+implementations to migrate to this extension would need: 1) a change
+within the packet header packetization logic, adding two variable
+integers. The masking algorithm stays unchanged and maintains its
+cryptographic properties. 2) The wire representation reverses field
+ordering within frames. 3) a decrypted QUIC packet payload must be
+processed at the receiver rewinding from the packet's last decrypted
+byte to the first frame. Steps 2) and 3) should mirror existing code.
+- Does not mandate existing QUIC implementations to support this
+version. Can fallback to QUIC v1 (by the QUIC protocol negotiation
+design).
+- Does not modify any of the QUIC's transport properties (i.e., HoL
+blocking avoidance, multiplexing, extensibility, ...) and does not
+conflict with the goals of any ongoing work on QUIC extensions (e.g.,
+MPQUIC) otherwise than by requiring them to change as well their wire
+representation.
+- Does not impact QUIC's security/safety assuming implementers follow
+  added guidance specific to Reverso.
+- Encryption/decryption stays compatible with current usage of existing crypto
+libraries.
+- Implementations that have chosen a memory model to handle data
+reassembly themselves and expose owned contiguous ranges of bytes in QUIC v1
+can write a Reverso implementation without changing their Stream
+reading API. Applications using these implementations may then receive a
+QUIC update improving packet processing efficiency on negotiated QUIC
+Reverso connections.
 
 # Conventions and Definitions
 
@@ -81,9 +106,9 @@ with existing crypto backends are preserved.
 
 # Streams {#Streams}
 
-Stream ID values start at 1. The value 0 is reserved to indicate within
+Stream ID values start at 1. We reserve the value 0 to indicate within
 the new short header (see {{Header-Protection}}) that no stream frame is
-packed within the payload.
+packed within the encrypted payload.
 
 # Frame Formats
 
@@ -104,7 +129,7 @@ Frame {
 This representation follows the implicit rule that what we specify from
 top to bottom is written and read from left to right on the wire.
 
-If QUIC VReverso is used, frames are reversed. Type-dependent fields
+If QUIC Reverso is used, frames are reversed. Type-dependent fields
 appear first (from left to right on the wire), and the frame terminates
 with the Frame Type. We represent those frames by reversing as well
 their representation in specifications:
@@ -116,14 +141,10 @@ Frame {
 }
 ~~~
 
-Of course, within an implementation, the relative order of elements
-within Structs or Objects does not matter, and can stay untouched. Only
-writing on wire and reading from the wire would be altered.
-
 The choice of order of Type-Dependent Fields only matter to smooth
 transition and adaptation of existing code handling {{RFC9000}}'s frame
 format. Reversing the existing ordering, and not making other changes
-within the relative order of elements supports straightforward
+within the relative order of elements may support straightforward
 adaptation of existing code. For example, in {{RFC9000}}, the
 MAX_STREAM_DATA Frame is defined as:
 
@@ -148,6 +169,38 @@ MAX_STREAM_DATA Frame {
 Other frames are altered with the same reversing logic. It includes
 reversing internal structures in a given Frame if any, such as the ACK Frame.
 
+## Frame format alternative to enable contiguous zero-copy receivers (to debate)
+
+An alternative which does not reverse the control wire representation but
+increases control overheads:
+
+  - The stream frame header becomes a stream frame footer (i.e., appears
+  after the data on wire). Other control frames may appear after the
+  stream frame unchanged.
+  - The offset of the stream frame footer has to be predicted by the
+  receiver (possibly by adding another field to the short header, or
+  another frame containing the offset value and the constraint that it
+  must be located at the packet boundary).
+
+This choice increases overheads in a QUIC packet (conflict with the goal
+to minimize control overheads), but reduces implementation efforts in
+regards to writing and processing reversed frames, and back-processing
+the decrypted QUIC packet (inline with one of the initial goals to
+minimize the cost of porting existing code to the new version).
+
+Another alternative that has no more overhead and preserves most of
+the current frames' field ordering would be to move the Type to the last
+element of each frame on the wire, and backward-process the packet on
+the receiver. In the case of the Stream frame, all controls must be
+written as a footer, the Type must be the last field, and the remaining
+fields ordering may be preserved.
+
+Note: The Ack frame structure depends on the direction of its processing
+(assumed left-to-right). If the Ack Frame content is still processed in
+this direction, below details applied to reversed ACK frame can be
+ignored. If packets are processed from right-to-left (backward), below
+details are relevant.
+
 ## Ack Frame's details
 
 The Ack Frame is reversed as well, but requires further changes on the
@@ -169,7 +222,7 @@ ACK Frame {
 
 Where the ACK Range contains ranges of packets that are alternately not
 acknowledged (Gap) and acknowledged (ACK Range). All other fields are
-untouched, only their order on the wire is modifierd.
+untouched, only their order on the wire is modified.
 
 ### Reversed ACK Ranges
 
@@ -246,10 +299,12 @@ ECN Counts {
 
 # Packet Formats {#Packet-Format}
 
-For implementers to take advantage of Reverso, we require to know the
-Stream ID of any stream frame within the payload, and the data offset.
-These two integers are added in the QUIC short header and protected with
-the mask.
+For implementers to take advantage of Reverso and use the decryption
+internal copy for data reassembly, we require to know the Stream ID of
+any stream frame within the payload, and the data offset.  These two
+integers are added in the QUIC short header and protected with the mask
+using a XOR. In QUIC v1,  5 out of 16 bytes available are being used. In
+Reverso, we would use 13 out of 16 bytes.
 
 ## Header Protection {#Header-Protection}
 
@@ -297,18 +352,33 @@ bytes in total.
 
 - Offset: The Offset field is 1 to 4 bytes long, and encodes a value
 based on the knowledge of the maximum acknowledged offset, similarly to
-the Packet Number field encoding a value based on the maximum
-acknowledged packet number. On the receiver, the decoding procedure is
+the Packet Number field but encoding a value based on the highest
+acknowledged offset. On the receiver, the decoding procedure is
 similar to decoding packet numbers. This field is protected using
 {{RFC9001}}'s mask, up to consume 13 bytes from the minimum guaranteed
 16 bytes in total.
+
+## Stream ID encoding (to debate)
+
+The QUIC v1 protocol supports up to 2^{60} maximum streams. A QUIC
+Reverso implementation must encode a Stream ID within at most 30 bits in
+its header.  Due to the monotonic increasing nature of Stream IDs, we
+can work out a solution that still permit up to 2^{60} maximum streams,
+but constraints endpoints to fire at most 2^{30} new streams at any
+time. We consider (up to debate) this constraint to exceed any
+reasonable usage of the QUIC protocol given the memory requirement to
+held up to 2^{30} opened streams in memory. Different solutions are
+possible.  An approach could be to re-use packet number
+encoding/decoding, but based on acknowledged new streams.
 
 ## Frame ordering
 
 In Reverso, a Stream Frame, if any, MUST be the first frame within the
 payload. The Stream frame can be followed by any number of control
 frames up to the packet boundary. Any other Stream frame SHOULD NOT be
-added within the same QUIC packet.
+added within the same QUIC packet, unless in scenarios where
+multiplexing may bring more benefits than contiguous zero-copy (e.g.,
+multiplexed HTTP queries within a single packet).
 
 # Variable-Length Integer Encoding
 
@@ -329,28 +399,56 @@ integer value in network byte order.
 | 11   | 8      | 62          | 0-4611686018427387903 |
 {: #integer-summary title="Summary of Integer Encodings with Reverso"}
 
-# Packing frames
+# Security, Safety and Liveness Considerations
 
-To take advantage of backward processing of QUIC VReverso packets, some
-constraints SHOULD be respected. The order and number of data chunks
-within a single encryption matters. The Stream frame if any MUST be the first
-element within the encrypted payload, followed by any number of control frames,
-up to the packet boundary. We SHOULD pack a single Stream frame per
-encryption. More than one would force an unavoidable memory copy of all
-but the first Stream frame within a packet.
+The goal of this section is to discuss careful considerations which a
+QUIC Reverso implementation must consider while implementing a
+contiguous zero-copy receiver interface.
 
-Lost frames being resubmitted SHOULD be packed within their own packet,
-and other control frames SHOULD not be multiplexed with retransmissions.
-This allows for spurious retransmissions that have been already
-processed but not acknowledged fast enough to not require the two-levels
-decryption. Only header decryption and information contained within the
-QUIC VReverso short header would be enough to decide whether the packet
-payload should be decrypted, or could be dropped before payload
-decryption is attempted.
+## Avoiding Data Corruption
+
+Contiguous zero-copy with Reverso is obtained from exploiting the added
+information in the short header and the decryption's internal copy to
+reassemble data fragments. For payload decryption, the Stream ID
+contained within the short header should be used as a buffer selection
+mechanism, and the offset is used to locate where to decrypt the packet
+content within the buffer.
+
+AEAD implementations may write at the destination address specified by
+the caller even if the decryption fails. Therefore, receivers must track
+the highest contiguous received authenticated offset for each stream and always
+decrypt in place any packet containing an offset below or equal to the
+tracked value.  Furthermore, implementers must be careful with data gaps
+within a stream buffer created due to out-of-order packets, where the
+decryption of a late out-of-order packet may override part of the
+existing buffered data.
+
+Different implementation solutions are possible to deal with this issue.
+In all cases it involves a  copy of the decrypted data. A possible
+solution is to apply the following logic:
+
+if the packet's data is to be decrypted at a location higher than the
+highest received contiguous offset + 1, and if the AEAD ciphertext is of
+size N and aimed at location L in the stream buffer, check whether the
+range L..L+N does not contain any previously decrypted data. Decrypt in
+place if the answer is yes to avoid data corruption, and safely copy to
+location L in the stream buffer.
+
+## Manipulating Short Header bits may cause hitting Stream Limits
+
+A QUIC Reverso implementation may allocate a new stream context before a
+packet containing a new Stream is decrypted. If an on-path adversary
+flips bits in the encrypted Header it would result to a flipped bit in the
+decrypted header as per {{RFC9001}}'s XOR properties used for header
+protection. Such event would be detected at the AEAD decryption phase
+since the AEAD decryption would fail. In the meantime, any memory
+related to a new Stream context resulting from the adversarial
+manipulation would need to be released, and stream limits would need to
+be credited back.
+
 
 --- back
 
-# Acknowledgments
-{:numbered="false"}
+# Acknowledgments {:numbered="false"}
 
 TODO acknowledge.

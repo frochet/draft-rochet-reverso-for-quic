@@ -324,7 +324,7 @@ algorithms.
   Packet Number (8..32),     # Protected
   Stream ID (8..32)          # Protected
   Offset (8..32)             # Protected
-  Protected Payload (0..24), # Skipped Part
+  Protected Payload (0..72), # Skipped Part
   Protected Payload (128),   # Sampled Part
   Protected Payload (..),    # Remainder
 }
@@ -353,6 +353,33 @@ acknowledged offset. On the receiver, the decoding procedure is
 similar to decoding packet numbers. This field is protected using
 {{RFC9001}}'s mask, up to consume 13 bytes from the minimum guaranteed
 16 bytes in total.
+
+- Protected Payload Skipped Part's length: 72 bits are skipped instead
+of 24. 24 bits are skipped in QUIC v1 to account for the maximum (yet
+unknown) length of the Packet Number when sampling the encrypted payload
+for header decryption. Since we add variable integers, we need sampling
+further away to guarantee always falling into the AEAD encryption
+(and/or tag). We need skipping 72 bits to account for the maximum
+combined (yet unknown) lengths of Packet Number, Stream ID and offset.
+This affects the minimum payload length for preparing a QUIC packet at
+the sender, which was following the relation:
+
+pn_len + min_payload_len + tag_len = 4 + sample_len
+
+=> min_payload_len := 4 + sample_len - tag_len - pn_len
+=> min_payload_len := 20 - tag_len - pn_len
+
+for QUIC v1, defined in [RFC9001], where a safe static value can be set
+to 3 bytes for min_payload_len (i.e., it is the max value of the upper
+relation).  In VReverso, the relation becomes:
+
+pn_len + stream_id_len + offset_len + min_payload_len + tag_len = 12 + sample_len
+
+=> min_payload_len := 12 + sample_len - tag_len - pn_len - stream_id_len - offset_len
+=> min_payload_len := 28 - tag_len - pn_len - stream_id_len - offset_len
+
+A safe static value for min_payload_len can be set to 9 bytes in
+implementations.
 
 ## Stream ID encoding (to debate)
 

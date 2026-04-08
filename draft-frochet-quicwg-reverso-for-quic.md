@@ -166,135 +166,6 @@ MAX_STREAM_DATA Frame {
 }
 ~~~
 
-Other frames' wire format is altered with the same reversing logic. It includes
-reversing internal structures in a given Frame if any, such as the ACK Frame.
-
-## Frame format alternative to enable contiguous zero-copy receivers (to debate)
-
-An alternative that does not reverse the control wire representation but
-increases control overheads:
-
-  - The stream frame header becomes a stream frame footer (i.e., appears
-  after the data on the wire). Other control frames may appear after the
-  stream frame is unchanged.
-  - The offset of the stream frame footer has to be predicted by the
-  receiver (possibly by adding another field to the short header, or
-  another frame containing the offset value and the constraint that it
-  must be located at the packet boundary).
-
-This choice increases overheads in a QUIC packet (conflict with the goal
-to minimize control overheads), but reduces implementation efforts in
-regards to writing and processing reversed frames and back processing
-the decrypted QUIC packet (inline with one of the initial goals to
-minimize the cost of porting existing code to the new version).
-
-Another alternative that has no more overhead and preserves most of
-the current frames' field ordering would be to move the Type to the last
-element of each frame on the wire, and backward process the packet on
-the receiver. In the case of the Stream frame, all controls must be
-written as a footer, the Type must be the last field, and the remaining
-fields ordering may be preserved.
-
-Note: The Ack frame structure depends on the direction of its processing
-(assumed left-to-right). If the Ack Frame content is still processed in
-this direction, the details below applied to the reversed ACK frame can be
-ignored. If packets are processed from right-to-left (backward), below
-details are relevant.
-
-## Ack Frame's details
-
-The Ack Frame is reversed as well, but requires further changes to the
-ACK Range specifications and ECN Counts. The goal is to guarantee no
-change in the processing logic of an ACK Frame, and minimal change to
-existing code. Given back processing of a packet, the ACK Frame should
-become:
-
-~~~
-ACK Frame {
-  [ECN Counts (..)],
-  ACK Range (..) ...,
-  First ACK Range (i),
-  ACK Range Count (i),
-  ACK Dealy (i),
-  Largest Acknowledged (i),
-  Type (i)  = 0x02..0x03,
-}
-~~~
-
-Where the ACK Range contains ranges of packets that are alternately not
-acknowledged (Gap) and acknowledged (ACK Range). All other fields are
-untouched; only their order on the wire is modified.
-
-### Reversed ACK Ranges
-
-In {{RFC9000}}, each ACK Range consists of alternating Gap and ACK Range
-Length values *in descending packet number order* as appearing on the
-wire. The ranges in {{RFC9000}} contain the information in reversed
-ordering, starting from the largest acknowledged packets. In this
-proposal, to accommodate backward processing of the frame and minimal
-algorithmic changes, the ACK Range consists of alternating ACK Range
-Length and Gap in *ascending packet number order*.
-
-~~~
-ACK Range {
-  ACK Range Length (i),
-  Gap (i),
-}
-~~~
-{: #ack-range-format title="ACK Ranges"}
-
-As explained in {{RFC9000}}, the fields that form each ACK Range are:
-
-ACK Range Length:
-
-: A variable-length integer indicating the number of contiguous acknowledged
-  packets preceding the largest packet number, as determined by the
-  last processed Gap.
-
-Gap:
-
-: A variable-length integer that represents the number of consecutive,
-unacknowledged packets before the lowest-numbered packet in the last
-processed acknowledgment range.
-
-Since ACK Range Length and Gap are defined as relative integers; to keep
-efficient processing and unchanged algorithmic compared to {{RFC9000}},
-each ACK Range describes progressively lower-numbered packets while
-being processed backwards. However, on the wire, from left to right,
-each ACK Range describes progressively higher-numbered packets.
-
-Therefore, while processing this information backwards, and given the
-largest packet number for the current range, the smallest value is
-determined by the following formula (like {{RFC9000}}):
-
-~~~
-   smallest = largest - ack_range
-~~~
-
-Where the largest value for an ACK Range is determined by cumulatively
-subtracting the size of all preceding ACK Range Lengths and Gaps. The
-first-largest value is obtained with the ACK Frame's Largest
-Acknowledged field. The subsequent largest for each Ack Range is then
-computed similarly to {{RFC9000}}:
-
-~~~
-   largest = previous_smallest - gap - 2
-~~~
-
-### Reversed ECN Counts
-
-The ACK frame uses the least significant bit of the type value to
-indicate ECN feedback. To facilitate minimal adjustments to the existing processing logic, the ECN Counts order is reversed in the ECN Counts order compared to {{RFC9000}}. This ensures that the order of processed elements remains the same.
-
-~~~
-ECN Counts {
-  ECN-CE Count (i),
-  ECT1 Count (i),
-  ECT0 Count (i),
-}
-~~~
-{: #ecn-count-format title="ECN Count Format"}
-
 # Packet Formats {#Packet-Format}
 
 For implementers to take advantage of Reverso and use the decryption
@@ -335,7 +206,9 @@ The 1-RTT packets has the following modifications from QUIC v1:
 - Packet Number: The Packet Number field is 1 to 4 bytes long, with the
 least two significant bits of the last byte containing the length of the
 Stream ID. This length is encoded as an unsigned two-bit integer that is
-one less than the length of the Stream ID field in bytes. This field is protected using {{RFC9001}}’s mask, which can consume a maximum of 5 bytes (including the first header byte) from the minimum guaranteed 16 bytes.
+one less than the length of the Stream ID field in bytes. This field is
+protected using {{RFC9001}}’s mask, which can consume a maximum of 5
+bytes (including the first header byte) from the guaranteed 16 bytes.
 
 - Stream ID: The Stream ID field is 1 to 4 bytes long, with the least
 two significant bits of the last byte containing the length of the
@@ -343,33 +216,34 @@ Offset. This length is encoded as an unsigned two-bit integer that is
 one less than the length of the Offset field in bytes. A 1-byte value of
 0 for this field is reserved to indicate that the encrypted payload
 does not contain any Stream frame. This field is protected using
-{{RFC9001}}'s mask, up to consume 9 bytes from the minimum guaranteed 16
-bytes in total.
+{{RFC9001}}'s mask, up to consume 9 bytes from the guaranteed 16 bytes
+in total.
 
 - Offset: The Offset field is 1 to 4 bytes long, and encodes a value
 based on the knowledge of the maximum acknowledged offset, similar to
 the Packet Number field but encoding a value based on the highest
 acknowledged offset. On the receiver, the decoding procedure is
 similar to decoding packet numbers. This field is protected using
-{{RFC9001}}'s mask, up to consume 13 bytes from the minimum guaranteed
-16 bytes in total.
+{{RFC9001}}'s mask, up to consume 13 bytes from the guaranteed 16 bytes
+in total.
 
 - Protected Payload Skipped Part's length: 72 bits are skipped instead
-of 24. 24 bits are skipped in QUIC v1 to account for the maximum (yet
-unknown) length of the Packet Number when sampling the encrypted payload
-for header decryption. Since we add variable integers, we need sampling
-further away to guarantee always falling into the AEAD encryption
-(and/or tag). We need skipping 72 bits to account for the maximum
-combined (yet unknown) lengths of Packet Number, Stream ID and offset.
-This affects the minimum payload length for preparing a QUIC packet at
-the sender, which was following the relation:
+of 24. 24 bits are skipped in QUIC v1 in order to account for the
+maximum (yet unknown) length of the Packet Number when sampling the
+encrypted payload for header decryption. Since we add variable
+integers, we need sampling further away to guarantee always falling
+into the AEAD encryption (and/or tag). We need skipping 72 bits to
+account for the maximum combined (yet unknown) lengths of Packet
+Number, Stream ID and offset. This affects the minimum payload length
+for preparing a QUIC packet at the sender, which was following the
+relation in QUIC v1:
 
 pn_len + min_payload_len + tag_len = 4 + sample_len
 
 => min_payload_len := 4 + sample_len - tag_len - pn_len
 => min_payload_len := 20 - tag_len - pn_len
 
-for QUIC v1, defined in [RFC9001], where a safe static value can be set
+as defined in [RFC9001], where a safe static value can be set
 to 3 bytes for min_payload_len (i.e., it is the max value of the upper
 relation).  In VReverso, the relation becomes:
 
@@ -390,9 +264,9 @@ can work out a solution that still permits up to 2^{60} maximum streams,
 but constraints endpoints to fire at most 2^{30} new streams at any
 time. We consider (up to debate) this constraint to exceed any
 reasonable usage of the QUIC protocol given the memory requirement to
-hold up to 2^{30} opened streams in memory. Different solutions are
-possible.  An approach could be to reuse packet number
-encoding/decoding, but based on acknowledged new streams.
+hold up to 2^{30} opened streams. Different solutions are possible.  An
+approach could be to reuse packet number encoding/decoding, but based on
+acknowledged new streams.
 
 ## Frame ordering
 
@@ -439,12 +313,12 @@ content within the buffer.
 
 AEAD implementations may write at the destination address specified by
 the caller even if the decryption fails. Therefore, receivers must track
-the highest contiguous received authenticated offset for each stream and always
-decrypt in place any packet containing an offset below or equal to the
-tracked value.  Furthermore, implementers must be careful with data gaps
-within a stream buffer created due to out-of-order packets, where the
-decryption of a late out-of-order packet may override part of the
-existing buffered data.
+the highest contiguous received authenticated offset for each stream and
+always decrypt in place any packet containing an offset below or equal
+to the tracked value.  Furthermore, implementers must be careful with
+data gaps within a stream buffer created due to out-of-order packets,
+where the decryption of a late out-of-order packet may override part of
+the existing buffered data.
 
 Different implementation solutions are possible to deal with this issue.
 In all cases it involves a  copy of the decrypted data. A possible
@@ -465,10 +339,9 @@ flips bits in the encrypted header it would result in a flipped bit in the
 decrypted header as per {{RFC9001}}'s XOR properties used for header
 protection. Such an event would be detected in the AEAD decryption phase,
 since the AEAD decryption would fail. In the meantime, any memory
-related to a new Stream context resulting from the adversarial
-manipulation would need to be released, and stream limits would need to
-be credited back.
-
+allocated related to a new Stream context resulting from the adversarial
+manipulation would need to be released, and any stream limit
+modification would need to be credited back.
 
 --- back
 

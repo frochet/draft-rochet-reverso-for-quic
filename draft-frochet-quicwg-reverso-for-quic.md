@@ -72,33 +72,23 @@ interface to the upper layer. A few more bytes also have to be added
 within the protected short header. Those changes are, however, engineered
 with goals to:
 
-- Minimize added control overheads.
-- Incremental support is possible: minimal work for existing
-implementations to migrate to this extension would need: 1) a change
-within the packet header packetization logic, adding two variable
-integers. The masking algorithm stays unchanged and maintains its
-cryptographic properties. 2) The wire representation reverses field
-ordering within frames. 3) a decrypted QUIC packet payload must be
-processed at the receiver rewinding from the packet's last decrypted
-byte to the first frame. Steps 2) and 3) should mirror existing code.
-- Does not mandate existing QUIC implementations to support this
+- Minimizing added control overheads.
+- Not requiring a different frame encoding/decoding code logic. Despite
+the change of the wire format, the code for writing and processing
+QUIC frames does not need adaptation as long as a buffer abstraction
+to write and read from right to left exists.
+- Not mandating existing QUIC implementations to support this
 version. Can fallback to QUIC v1 (by the QUIC protocol negotiation
 design).
-- Does not modify any of the QUIC's transport properties (i.e., HoL
-blocking avoidance, multiplexing, extensibility, ...) and does not
-conflict with the goals of any ongoing work on QUIC extensions (e.g.,
+- Not modifying any of the QUIC's transport properties (i.e., HoL
+blocking avoidance, multiplexing, extensibility, ...) and not
+conflicting with the goals of any ongoing work on QUIC extensions (e.g.,
 MPQUIC) otherwise than by requiring them to change their wire
 representation as well.
-- Does not impact QUIC's security/safety assuming implementers follow
-  added guidance to Reverso.
-- Encryption/decryption stays compatible with the current usage of
+- Not impacting QUIC's security/safety assuming implementers follow
+added guidance to Reverso.
+- Keeping Encryption/decryption compatible with the current usage of
 existing crypto libraries.
-- Implementations that have chosen a memory model to handle data
-reassembly themselves and expose owned contiguous ranges of bytes in QUIC v1
-can write a Reverso implementation without changing their Stream
-reading API. Applications using these implementations may then receive a
-QUIC update improving packet processing efficiency on negotiated QUIC
-Reverso connections.
 
 # Conventions and Definitions
 
@@ -131,7 +121,7 @@ top to bottom, is written and read from left to right on the wire.
 
 If QUIC Reverso is used, frames are reversed. Type-dependent fields
 appear first (from left to right on the wire), and the frame terminates
-with the Frame Type. We represent those frames by reversing 
+with the Frame Type. We represent those frames by reversing
 their representation in specifications:
 
 ~~~

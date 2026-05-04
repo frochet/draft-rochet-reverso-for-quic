@@ -46,10 +46,10 @@ from independent lower layers at deployment time.
 However, it is of notoriety that the QUIC design is CPU costly. The root
 cause of QUIC's high CPU cost isn't unique, and this document addresses
 one of them: a misalignment between QUIC's protocol specification and
-encryption usage. Indeed, the QUIC design in {{RFC9000}} unavoidably
-fragments Application Data and forces any implementation to perform at
-least a memory copy to provide a contiguous bytestream abstraction to
-the upper layer, at the receiver.
+encryption integration. Indeed, the QUIC design in {{RFC9000}}
+unavoidably fragments Application Data and forces any implementation to
+perform at least a memory copy to provide a contiguous bytestream
+abstraction to the upper layer, at the receiver.
 
 This document suggests another QUIC Version demanding the Stream frame
 to always be the first frame if any, and reversing the wire
@@ -57,10 +57,10 @@ representation of the QUIC protocol. These two changes offer the
 opportunity for implementers to provide a contiguous zero-copy
 abstraction at the receiver side for each stream using the decryption
 internal copy for data reassembly. With this version, QUIC frames are
-encoded in reverse ordering and would be processed from right to left at
-the receiver, instead of the usual left to right as in any protocol. The
-stream frame may be followed by any number of control frames up to the
-packet boundary. Other stream frames may be packed within the same
+encoded in reverse ordering and would be written and processed from
+right to left, instead of the usual left to right as in any protocol.
+The stream frame may be followed by any number of control frames up to
+the packet boundary. Other stream frames may be packed within the same
 packet, although receiver implementations would not be able to process
 them in contiguous zero-copy.
 
@@ -75,8 +75,8 @@ with goals to:
 - Minimizing added control overheads.
 - Not requiring a different frame encoding/decoding code logic. Despite
 the change of the wire format, the code for writing and processing
-QUIC frames does not need adaptation as long as a buffer abstraction
-to write and read from right to left exists.
+QUIC frames does not need adaptation as long as a protocol-independent
+buffer abstraction to write and read from right to left exists.
 - Not mandating existing QUIC implementations to support this
 version. Can fallback to QUIC v1 (by the QUIC protocol negotiation
 design).
@@ -103,11 +103,10 @@ packed within the encrypted payload.
 # Frame Formats
 
 Frames' structure written on the wire is altered in this QUIC version
-to support a backward processing of QUIC packets. With the exception of
-the ACK frame, all the other frames are straightforward to adapt from
-{{RFC9000}}. Essentially, on {{RFC9000}}, each frame begins with a Frame
-Type followed by additional type-dependent fields, and is represented
-as this:
+to support a backward processing of QUIC packets. All the other frames
+are straightforward to adapt from {{RFC9000}}. Essentially, on
+{{RFC9000}}, each frame begins with a Frame Type followed by additional
+type-dependent fields, and is represented as this:
 
 ~~~
 Frame {
@@ -131,8 +130,8 @@ Frame {
 }
 ~~~
 
-The choice of order of Type-Dependent Fields only matters to ease
-the transition and adaptation of existing code handling {{RFC9000}}'s frame
+The choice of order of Type-Dependent Fields only matters to ease the
+transition and adaptation of existing code handling {{RFC9000}}'s frame
 format. Reversing the existing ordering and not making other changes
 within the relative order of elements may support straightforward
 adaptation of existing code. For example, in {{RFC9000}}, the
